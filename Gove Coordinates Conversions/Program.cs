@@ -27,6 +27,8 @@ namespace GoveCadGeodeticTransformer
                 return;
             }
 
+            string tempFile = Path.Combine(Path.GetDirectoryName(outputPath) ?? string.Empty, Guid.NewGuid().ToString() + ".tmp");
+
             try
             {
                 Console.WriteLine("[INFO] Instantiating high-precision geodetic engine...");
@@ -44,14 +46,21 @@ namespace GoveCadGeodeticTransformer
                 long processedEntities = ProcessDrawingEntities(dxf, engine);
 
                 Console.WriteLine($"[INFO] Successfully transformed {processedEntities} spatial entities.");
-                Console.WriteLine("[INFO] Writing updated database to output file...");
-                dxf.Save(outputPath);
+                Console.WriteLine("[INFO] Writing updated database to temporary file...");
+                
+                dxf.Save(tempFile);
+
+                Console.WriteLine("[INFO] Finalizing file output via atomic swap...");
+                if (File.Exists(outputPath)) File.Delete(outputPath);
+                File.Move(tempFile, outputPath);
+
                 Console.WriteLine(" DXF transformation complete.");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($" Transformation halted due to: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
+                if (File.Exists(tempFile)) File.Delete(tempFile);
             }
         }
 
@@ -86,24 +95,21 @@ namespace GoveCadGeodeticTransformer
             foreach (Polyline2D poly in dxf.Entities.Polylines2D)
             {
                 double baseElevation = poly.Elevation;
-                List<Polyline2DVertex> transformedVertices = new List<Polyline2DVertex>();
-
-                foreach (Polyline2DVertex vertex in poly.Vertexes)
+                var transformedVertices = poly.Vertexes.Select(vertex =>
                 {
                     var transformed = engine.TransformAMGToMGA(vertex.Position.X, vertex.Position.Y, baseElevation);
-                    var newVertex = new Polyline2DVertex(new Vector2(transformed.Easting, transformed.Northing), vertex.Bulge)
+                    return new Polyline2DVertex(new Vector2(transformed.Easting, transformed.Northing), vertex.Bulge)
                     {
                         StartWidth = vertex.StartWidth,
                         EndWidth = vertex.EndWidth
                     };
-                    transformedVertices.Add(newVertex);
-                    entityCount++;
-                }
+                }).ToList();
 
                 poly.Vertexes.Clear();
                 foreach (var v in transformedVertices)
                 {
                     poly.Vertexes.Add(v);
+                    entityCount++;
                 }
 
                 // Adjust global elevation plane parameter based on the first transformed node height

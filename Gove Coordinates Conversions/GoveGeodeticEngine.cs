@@ -106,6 +106,14 @@ namespace GoveCadGeodeticTransformer
             double ePrime2 = (a * a - b * b) / (b * b);
 
             double p = Math.Sqrt(X * X + Y * Y);
+
+            // Polar region safety check to prevent division-by-zero or precision loss
+            if (p < 1e-10)
+            {
+                double latPolar = Z >= 0 ? Math.PI / 2.0 : -Math.PI / 2.0;
+                return (latPolar, 0, Math.Abs(Z) - b);
+            }
+
             double theta = Math.Atan2(Z * a, p * b);
 
             double lat = Math.Atan2(Z + ePrime2 * b * Math.Pow(Math.Sin(theta), 3), 

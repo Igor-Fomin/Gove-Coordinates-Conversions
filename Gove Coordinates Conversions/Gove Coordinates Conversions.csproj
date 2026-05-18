@@ -5,16 +5,15 @@
     <RootNamespace>Gove_Coordinates_Conversions</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <OutputType>Exe</OutputType>
-    <Platforms>x64</Platforms>
+    <OutputType>Library</OutputType>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AutoCAD.NET" Version="25.0.1" />
-    <PackageReference Include="Chuongmep.Civil3D.Api.AecBaseMgd" Version="2025.0.0" />
-    <PackageReference Include="Chuongmep.Civil3D.Api.AeccDbMgd" Version="2025.0.0" />
-    <PackageReference Include="Chuongmep.Civil3D.Api.AecCoreMgd" Version="2025.0.0" />
+    <PackageReference Include="AutoCAD.NET" Version="25.0.1" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Chuongmep.Civil3D.Api.AecBaseMgd" Version="2025.0.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Chuongmep.Civil3D.Api.AeccDbMgd" Version="2025.0.0" PrivateAssets="all" ExcludeAssets="runtime" />
+    <PackageReference Include="Chuongmep.Civil3D.Api.AecCoreMgd" Version="2025.0.0" PrivateAssets="all" ExcludeAssets="runtime" />
     <PackageReference Include="DotSpatial.Projections" Version="4.0.656" />
     <PackageReference Include="netDxf" Version="2023.11.10" />
   </ItemGroup>
