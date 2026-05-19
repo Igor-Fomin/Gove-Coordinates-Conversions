@@ -5,8 +5,8 @@ using DotSpatial.Projections;
 namespace GoveCadGeodeticTransformer
 {
     /// <summary>
-    /// Mathematical engine that replicate Leica Geo Office Classical 3D transformations
-    /// to bridge localized Gove AMG and Gove MGA systems.
+    /// Mathematical engine that replicates Leica Geo Office Classical 3D transformations
+    /// using rigorous EPSG 9607 Coordinate Frame Rotation matrices.
     /// </summary>
     public class GoveGeodeticEngine
     {
@@ -40,14 +40,44 @@ namespace GoveCadGeodeticTransformer
         private const double rz_MGA_arcsec = -2.22240;
         private const double sf_MGA_ppm = -9.2225;
 
+        // Pre-computed rotation matrices for performance
+        private readonly double[,] _rAMG = new double[3, 3];
+        private readonly double[,] _rMGA = new double[3, 3];
+
         public GoveGeodeticEngine()
         {
-            // Initialize projections isolating the ellipsoids without standard datum shift parameters.
-            // This allows the engine to apply LGO's custom 7-parameter models manually.
+            // Initialize projections with explicit high-precision parameters to match LGO's internal engine.
             _ansUtm53 = ProjectionInfo.FromProj4String("+proj=utm +zone=53 +south +a=6378160.0 +rf=298.25 +units=m +no_defs");
             _ansGeographic = ProjectionInfo.FromProj4String("+proj=longlat +a=6378160.0 +rf=298.25 +no_defs");
-            _grs80Utm53 = ProjectionInfo.FromProj4String("+proj=utm +zone=53 +south +ellps=GRS80 +units=m +no_defs");
-            _grs80Geographic = ProjectionInfo.FromProj4String("+proj=longlat +ellps=GRS80 +no_defs");
+            _grs80Utm53 = ProjectionInfo.FromProj4String("+proj=utm +zone=53 +south +a=6378137.0 +rf=298.25722210088 +units=m +no_defs");
+            _grs80Geographic = ProjectionInfo.FromProj4String("+proj=longlat +a=6378137.0 +rf=298.25722210088 +no_defs");
+
+            // Pre-compute matrices
+            ComputeMatrix(_rAMG, rx_AMG_arcsec, ry_AMG_arcsec, rz_AMG_arcsec);
+            ComputeMatrix(_rMGA, rx_MGA_arcsec, ry_MGA_arcsec, rz_MGA_arcsec);
+        }
+
+        private void ComputeMatrix(double[,] matrix, double rx, double ry, double rz)
+        {
+            double tx = (rx / 3600.0) * (Math.PI / 180.0);
+            double ty = (ry / 3600.0) * (Math.PI / 180.0);
+            double tz = (rz / 3600.0) * (Math.PI / 180.0);
+
+            double cx = Math.Cos(tx), sx = Math.Sin(tx);
+            double cy = Math.Cos(ty), sy = Math.Sin(ty);
+            double cz = Math.Cos(tz), sz = Math.Sin(tz);
+
+            matrix[0, 0] = cy * cz;
+            matrix[0, 1] = cz * sx * sy + cx * sz;
+            matrix[0, 2] = -cx * cz * sy + sx * sz;
+
+            matrix[1, 0] = -cy * sz;
+            matrix[1, 1] = cx * cz - sx * sy * sz;
+            matrix[1, 2] = cz * sx + cx * sy * sz;
+
+            matrix[2, 0] = sy;
+            matrix[2, 1] = -cy * sx;
+            matrix[2, 2] = cx * cy;
         }
 
         /// <summary>
@@ -67,12 +97,12 @@ namespace GoveCadGeodeticTransformer
             var cartesianANS = GeodeticToCartesian(lat_ANS, lon_ANS, h_ANS, ANS_a, ANS_rf);
 
             // Step 3: Inverse Bursa-Wolf Transformation (ANS Cartesian -> WGS84 Cartesian)
-            var cartesianWGS84 = InverseBursaWolf(cartesianANS.X, cartesianANS.Y, cartesianANS.Z, 
-                                                 dx_AMG, dy_AMG, dz_AMG, rx_AMG_arcsec, ry_AMG_arcsec, rz_AMG_arcsec, sf_AMG_ppm);
+            var cartesianWGS84 = ApplyInverseBursaWolf(cartesianANS.X, cartesianANS.Y, cartesianANS.Z, 
+                                                 dx_AMG, dy_AMG, dz_AMG, sf_AMG_ppm, _rAMG);
 
             // Step 4: Forward Bursa-Wolf Transformation (WGS84 Cartesian -> GRS80 Cartesian)
-            var cartesianGRS80 = ForwardBursaWolf(cartesianWGS84.X, cartesianWGS84.Y, cartesianWGS84.Z, 
-                                                 dx_MGA, dy_MGA, dz_MGA, rx_MGA_arcsec, ry_MGA_arcsec, rz_MGA_arcsec, sf_MGA_ppm);
+            var cartesianGRS80 = ApplyForwardBursaWolf(cartesianWGS84.X, cartesianWGS84.Y, cartesianWGS84.Z, 
+                                                 dx_MGA, dy_MGA, dz_MGA, sf_MGA_ppm, _rMGA);
 
             // Step 5: GRS80 Cartesian -> GRS80 Geodetic (Bowring's Method)
             var geodeticGRS80 = CartesianToGeodetic(cartesianGRS80.X, cartesianGRS80.Y, cartesianGRS80.Z, GRS80_a, GRS80_rf);
@@ -107,7 +137,6 @@ namespace GoveCadGeodeticTransformer
 
             double p = Math.Sqrt(X * X + Y * Y);
 
-            // Polar region safety check to prevent division-by-zero or precision loss
             if (p < 1e-10)
             {
                 double latPolar = Z >= 0 ? Math.PI / 2.0 : -Math.PI / 2.0;
@@ -126,44 +155,31 @@ namespace GoveCadGeodeticTransformer
             return (lat, lon, h);
         }
 
-        private (double X, double Y, double Z) ForwardBursaWolf(double x, double y, double z, 
-            double dx, double dy, double dz, double rx, double ry, double rz, double sf)
+        private (double X, double Y, double Z) ApplyForwardBursaWolf(double x, double y, double z, 
+            double dx, double dy, double dz, double sf, double[,] matrix)
         {
-            // Convert arcseconds to radians
-            double thetaX = (rx / 3600.0) * (Math.PI / 180.0);
-            double thetaY = (ry / 3600.0) * (Math.PI / 180.0);
-            double thetaZ = (rz / 3600.0) * (Math.PI / 180.0);
             double scale = 1.0 + (sf * 1e-6);
 
-            // CFR small angle rotation matrix multiplication
-            double xRot = x + (thetaZ * y) - (thetaY * z);
-            double yRot = (-thetaZ * x) + y + (thetaX * z);
-            double zRot = (thetaY * x) - (thetaX * y) + z;
+            double xRot = matrix[0, 0] * x + matrix[0, 1] * y + matrix[0, 2] * z;
+            double yRot = matrix[1, 0] * x + matrix[1, 1] * y + matrix[1, 2] * z;
+            double zRot = matrix[2, 0] * x + matrix[2, 1] * y + matrix[2, 2] * z;
 
-            double X_out = dx + scale * xRot;
-            double Y_out = dy + scale * yRot;
-            double Z_out = dz + scale * zRot;
-
-            return (X_out, Y_out, Z_out);
+            return (dx + scale * xRot, dy + scale * yRot, dz + scale * zRot);
         }
 
-        private (double X, double Y, double Z) InverseBursaWolf(double x, double y, double z, 
-            double dx, double dy, double dz, double rx, double ry, double rz, double sf)
+        private (double X, double Y, double Z) ApplyInverseBursaWolf(double x, double y, double z, 
+            double dx, double dy, double dz, double sf, double[,] matrix)
         {
-            double thetaX = (rx / 3600.0) * (Math.PI / 180.0);
-            double thetaY = (ry / 3600.0) * (Math.PI / 180.0);
-            double thetaZ = (rz / 3600.0) * (Math.PI / 180.0);
             double scale = 1.0 + (sf * 1e-6);
 
-            // Shift back to geocentric origin
             double xShift = (x - dx) / scale;
             double yShift = (y - dy) / scale;
             double zShift = (z - dz) / scale;
 
-            // CFR small angle matrix transpose (R^T) multiplication for inverse rotation
-            double X_out = xShift - (thetaZ * yShift) + (thetaY * zShift);
-            double Y_out = (thetaZ * xShift) + yShift - (thetaX * zShift);
-            double Z_out = (-thetaY * xShift) + (thetaX * yShift) + zShift;
+            // Inverse rotation via matrix transposition (R^T)
+            double X_out = matrix[0, 0] * xShift + matrix[1, 0] * yShift + matrix[2, 0] * zShift;
+            double Y_out = matrix[0, 1] * xShift + matrix[1, 1] * yShift + matrix[2, 1] * zShift;
+            double Z_out = matrix[0, 2] * xShift + matrix[1, 2] * yShift + matrix[2, 2] * zShift;
 
             return (X_out, Y_out, Z_out);
         }
