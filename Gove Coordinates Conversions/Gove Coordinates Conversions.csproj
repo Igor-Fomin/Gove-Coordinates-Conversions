@@ -8,6 +8,7 @@
     <OutputType>Library</OutputType>
     <PlatformTarget>x64</PlatformTarget>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
