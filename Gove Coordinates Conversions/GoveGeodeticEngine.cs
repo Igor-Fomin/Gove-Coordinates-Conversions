@@ -162,7 +162,7 @@ namespace GoveCadGeodeticTransformer
                 
                 double[] b = new double[9];
                 b[1] = 1.0/2.0*n - 2.0/3.0*n2 + 37.0/96.0*n3 - 1.0/360.0*n4 - 81.0/512.0*n5 + 96199.0/604800.0*n6 + 5406467.0/38707200.0*n7 - 7944359.0/67737600.0*n8;
-                b[2] = 1.0/48.0*n2 + 1.0/15.0*n3 - 437.0/1440.0*n4 + 46.0/105.0*n5 - 1118711.0/3870720.0*n6 + 51841.0/120960.0*n7 - 24749483.0/32256000.0*n8;
+                b[2] = 1.0/48.0*n2 + 1.0/15.0*n3 - 437.0/1440.0*n4 + 46.0/105.0*n5 - 1118711.0/387072.0*n6 + 51841.0/120960.0*n7 - 24749483.0/32256000.0*n8;
                 b[3] = 17.0/480.0*n3 - 37.0/840.0*n4 - 209.0/4480.0*n5 + 5569.0/90720.0*n6 + 9261899.0/58060800.0*n7 - 6457463.0/17740800.0*n8;
                 b[4] = 4397.0/161280.0*n4 - 11.0/504.0*n5 - 830251.0/7257600.0*n6 + 466511.0/2494800.0*n7 + 324154477.0/7664025600.0*n8;
                 b[5] = 4583.0/161280.0*n5 - 108847.0/3991680.0*n6 - 8005831.0/63866880.0*n7 + 22894433.0/124740000.0*n8;
@@ -177,12 +177,28 @@ namespace GoveCadGeodeticTransformer
                 }
                 
                 double chi = Math.Asin(Math.Sin(xiP) / Math.Cosh(etaP));
-                double e2 = 2 * f - f * f, es = Math.Sqrt(e2);
-                double lat = chi;
-                for (int i = 0; i < 5; i++) { // Newton-Raphson for isometric to geographic
-                    double s = es * Math.Sin(lat);
-                    lat = chi + es/2.0 * Math.Log((1.0 + s) / (1.0 - s));
+                double psi = Math.Atanh(Math.Sin(chi));
+                
+                double e2 = 2 * f - f * f;
+                double es = Math.Sqrt(e2);
+                
+                // High-precision initial estimate from sphere
+                double lat = Math.Atan(Math.Sinh(psi)); 
+                
+                // Newton-Raphson iteration targeting precise ellipsoidal geometry
+                for (int i = 0; i < 10; i++) {
+                    double sinL = Math.Sin(lat);
+                    double cosL = Math.Cos(lat);
+                    
+                    double fVal = Math.Atanh(sinL) - es * Math.Atanh(es * sinL) - psi;
+                    double dfVal = (1.0 - e2) / (cosL * (1.0 - e2 * sinL * sinL));
+                    
+                    double diff = fVal / dfVal;
+                    lat -= diff;
+                    
+                    if (Math.Abs(diff) < 1e-12) break;
                 }
+                
                 return (0, 0, lat, CM_53 + Math.Atan(Math.Sinh(etaP) / Math.Cos(xiP)));
             }
             else // Geodetic to Grid
