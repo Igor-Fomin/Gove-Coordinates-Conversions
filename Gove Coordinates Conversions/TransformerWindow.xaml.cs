@@ -10,21 +10,26 @@ namespace GoveCivil3DPlugin
 {
     public partial class TransformerWindow : Window
     {
+        private const double MbhdShift = 2.154; // Vertically, MBHD is 2.154m higher than AHD
+
         public TransformerWindow()
         {
             InitializeComponent();
         }
 
-        private void TransformButton_Click(object sender, RoutedEventArgs e)
+        private void ConvertAmgToMga_Click(object sender, RoutedEventArgs e) => ExecuteBatchTransformation(TransformType.AmgToMga);
+        private void ConvertMgaToAmg_Click(object sender, RoutedEventArgs e) => ExecuteBatchTransformation(TransformType.MgaToAmg);
+        private void ConvertAhdToMbhd_Click(object sender, RoutedEventArgs e) => ExecuteBatchTransformation(TransformType.AhdToMbhd);
+        private void ConvertMbhdToAhd_Click(object sender, RoutedEventArgs e) => ExecuteBatchTransformation(TransformType.MbhdToAhd);
+
+        private void ExecuteBatchTransformation(TransformType operation)
         {
             Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
             Editor ed = doc.Editor;
             Database db = doc.Database;
-            bool isForward = DirectionComboBox.SelectedIndex == 0;
 
-            // Hide the window to allow user drawing interaction selection safely
             this.Hide();
 
             try
@@ -33,82 +38,166 @@ namespace GoveCivil3DPlugin
                 {
                     using (Transaction tr = db.TransactionManager.StartTransaction())
                     {
-                        TypedValue[] filter = new TypedValue[] 
-                        { 
-                            new TypedValue((int)DxfCode.Operator, "<OR"),
-                            new TypedValue((int)DxfCode.Start, "POINT"), 
-                            new TypedValue((int)DxfCode.Start, "LINE"),
-                            new TypedValue((int)DxfCode.Start, "LWPOLYLINE"),
-                            new TypedValue((int)DxfCode.Operator, "OR>")
-                        };
-                        
-                        SelectionFilter sf = new SelectionFilter(filter);
-                        PromptSelectionOptions pso = new PromptSelectionOptions { MessageForAdding = "\nSelect elements to transform: " };
-                        PromptSelectionResult psr = ed.GetSelection(pso, sf);
-
-                        if (psr.Status != PromptStatus.OK)
-                        {
-                            LogConsole.AppendText($"[CANCELLED] Selection aborted by operator.\n");
-                            return;
-                        }
+                        BlockTable? bt = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                        if (bt == null) return;
+                        BlockTableRecord? ms = tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
+                        if (ms == null) return;
 
                         var engine = new GoveGeodeticEngine();
-                        int transformedCount = 0;
+                        int processedCount = 0;
 
-                        foreach (SelectedObject so in psr.Value)
+                        LogConsole.AppendText($"[START] Initializing calculation pipeline: {operation}...\n");
+
+                        foreach (ObjectId id in ms)
                         {
-                            if (so.ObjectId.IsErased) continue;
+                            if (id.IsErased) continue;
 
-                            Entity? ent = tr.GetObject(so.ObjectId, OpenMode.ForWrite) as Entity;
+                            Entity? ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
                             if (ent == null) continue;
 
                             if (ent is DBPoint point)
                             {
-                                var pos = point.Position;
-                                var res = isForward ? engine.TransformAMGToMGA(pos.X, pos.Y, pos.Z) : engine.TransformMGAToAMG(pos.X, pos.Y, pos.Z);
-                                point.Position = new Point3d(res.Easting, res.Northing, res.Height);
-                                transformedCount++;
+                                point.Position = ProcessPoint3d(point.Position, operation, engine);
+                                processedCount++;
                             }
                             else if (ent is Line line)
                             {
-                                var start = line.StartPoint;
-                                var end = line.EndPoint;
-                                var resStart = isForward ? engine.TransformAMGToMGA(start.X, start.Y, start.Z) : engine.TransformMGAToAMG(start.X, start.Y, start.Z);
-                                var resEnd = isForward ? engine.TransformAMGToMGA(end.X, end.Y, end.Z) : engine.TransformMGAToAMG(end.X, end.Y, end.Z);
-                                line.StartPoint = new Point3d(resStart.Easting, resStart.Northing, resStart.Height);
-                                line.EndPoint = new Point3d(resEnd.Easting, resEnd.Northing, resEnd.Height);
-                                transformedCount++;
+                                line.StartPoint = ProcessPoint3d(line.StartPoint, operation, engine);
+                                line.EndPoint = ProcessPoint3d(line.EndPoint, operation, engine);
+                                processedCount++;
                             }
                             else if (ent is Polyline pline)
                             {
-                                double elevation = pline.Elevation;
+                                double currentElevation = pline.Elevation;
                                 for (int i = 0; i < pline.NumberOfVertices; i++)
                                 {
                                     Point2d pt = pline.GetPoint2dAt(i);
-                                    var res = isForward ? engine.TransformAMGToMGA(pt.X, pt.Y, elevation) : engine.TransformMGAToAMG(pt.X, pt.Y, elevation);
-                                    pline.SetPointAt(i, new Point2d(res.Easting, res.Northing));
-                                    if (i == 0) pline.Elevation = res.Height;
+                                    Point3d transformed3d = ProcessPoint3d(new Point3d(pt.X, pt.Y, currentElevation), operation, engine);
+                                    pline.SetPointAt(i, new Point2d(transformed3d.X, transformed3d.Y));
+                                    if (i == 0) pline.Elevation = transformed3d.Z;
                                 }
-                                transformedCount++;
+                                processedCount++;
+                            }
+                            else if (ent is Polyline3d pline3d)
+                            {
+                                foreach (ObjectId vId in pline3d)
+                                {
+                                    var v = tr.GetObject(vId, OpenMode.ForWrite) as Entity;
+                                    if (v is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
+                                    {
+                                        v3d.Position = ProcessPoint3d(v3d.Position, operation, engine);
+                                    }
+                                }
+                                processedCount++;
+                            }
+                            else if (ent is Polyline2d pline2d)
+                            {
+                                foreach (ObjectId vId in pline2d)
+                                {
+                                    var v = tr.GetObject(vId, OpenMode.ForWrite) as Entity;
+                                    if (v is Vertex2d v2d)
+                                    {
+                                        v2d.Position = ProcessPoint3d(v2d.Position, operation, engine);
+                                    }
+                                }
+                                processedCount++;
+                            }
+                            else if (ent is BlockReference br)
+                            {
+                                br.Position = ProcessPoint3d(br.Position, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is DBText text)
+                            {
+                                text.Position = ProcessPoint3d(text.Position, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is MText mtext)
+                            {
+                                mtext.Location = ProcessPoint3d(mtext.Location, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is Circle circle)
+                            {
+                                circle.Center = ProcessPoint3d(circle.Center, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is Arc arc)
+                            {
+                                arc.Center = ProcessPoint3d(arc.Center, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is Ellipse ellipse)
+                            {
+                                ellipse.Center = ProcessPoint3d(ellipse.Center, operation, engine);
+                                processedCount++;
+                            }
+                            else if (ent is Spline spline)
+                            {
+                                for (int i = 0; i < spline.NumControlPoints; i++)
+                                {
+                                    spline.SetControlPointAt(i, ProcessPoint3d(spline.GetControlPointAt(i), operation, engine));
+                                }
+                                for (int i = 0; i < spline.NumFitPoints; i++)
+                                {
+                                    spline.SetFitPointAt(i, ProcessPoint3d(spline.GetFitPointAt(i), operation, engine));
+                                }
+                                processedCount++;
                             }
                         }
 
                         tr.Commit();
-                        LogConsole.AppendText($"[SUCCESS] Transformed {transformedCount} spatial entities.\n");
-                        StatusLabel.Text = $"Status: Execution Success ({transformedCount} items)";
+                        LogConsole.AppendText($"[SUCCESS] Batch run completed. Processed {processedCount} Model Space items.\n");
+                        StatusLabel.Text = $"Status: Success ({processedCount} items modified)";
                     }
                 }
             }
             catch (Exception ex)
             {
-                LogConsole.AppendText($"[CRITICAL] Error: {ex.Message}\n");
-                StatusLabel.Text = "Status: Process Failed";
+                LogConsole.AppendText($"[CRITICAL ERROR] Pipeline execution failed: {ex.Message}\n");
+                StatusLabel.Text = "Status: Execution Faulted";
             }
             finally
             {
-                // Bring back window smoothly upon transaction processing end
                 this.ShowDialog();
             }
         }
+
+        private Point3d ProcessPoint3d(Point3d pt, TransformType type, GoveGeodeticEngine engine)
+        {
+            // Direct access for performance and precision preservation
+            double x = pt.X;
+            double y = pt.Y;
+            double z = pt.Z;
+
+            switch (type)
+            {
+                case TransformType.AmgToMga:
+                    var amg2mga = engine.TransformAMGToMGA(x, y, z);
+                    return new Point3d(amg2mga.Easting, amg2mga.Northing, amg2mga.Height);
+
+                case TransformType.MgaToAmg:
+                    var mga2amg = engine.TransformMGAToAMG(x, y, z);
+                    return new Point3d(mga2amg.Easting, mga2amg.Northing, mga2amg.Height);
+
+                case TransformType.AhdToMbhd:
+                    // Precision-safe linear shift: retain X/Y bit-for-bit
+                    return new Point3d(x, y, z + MbhdShift);
+
+                case TransformType.MbhdToAhd:
+                    // Precision-safe linear shift: retain X/Y bit-for-bit
+                    return new Point3d(x, y, z - MbhdShift);
+
+                default:
+                    return pt;
+            }
+        }        }
+
+    public enum TransformType
+    {
+        AmgToMga,
+        MgaToAmg,
+        AhdToMbhd,
+        MbhdToAhd
     }
 }
