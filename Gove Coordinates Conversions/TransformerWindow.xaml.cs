@@ -110,20 +110,63 @@ namespace GoveCivil3DPlugin
                                 if (!isHorizontal) cogo.Elevation = transformed.Z;
                                 isModified = true;
                             }
-                            else if (ent is BlockReference br)
-                            {
-                                br.Position = ApplyTransform(br.Position, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is DBText text)
-                            {
-                                text.Position = ApplyTransform(text.Position, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
                             else if (ent is MText mtext)
                             {
                                 mtext.Location = ApplyTransform(mtext.Location, operation, engine, isHorizontal);
                                 isModified = true;
+                            }
+                            else if (ent is DBText dbtext)
+                            {
+                                dbtext.Position = ApplyTransform(dbtext.Position, operation, engine, isHorizontal);
+                                isModified = true;
+                            }
+                            else if (ent is RasterImage img)
+                            {
+                                img.InsertionPoint = ApplyTransform(img.InsertionPoint, operation, engine, isHorizontal);
+                                isModified = true;
+                            }
+                            else if (ent is PdfUnderlay pdf)
+                            {
+                                pdf.InsertionPoint = ApplyTransform(pdf.InsertionPoint, operation, engine, isHorizontal);
+                                isModified = true;
+                            }
+                            else if (ent is BlockReference xref)
+                            {
+                                xref.Position = ApplyTransform(xref.Position, operation, engine, isHorizontal);
+                                BlockTableRecord? btr = tr.GetObject(xref.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                                if (btr != null && btr.IsFromExternalReference)
+                                {
+                                    typeName = "XRef (External Reference)";
+                                }
+                                else
+                                {
+                                    typeName = "Block Reference";
+                                }
+                                isModified = true;
+                            }
+                            else if (ent is Face3d face)
+                            {
+                                face.SetVertexAt(0, ApplyTransform(face.GetVertexAt(0), operation, engine, isHorizontal));
+                                face.SetVertexAt(1, ApplyTransform(face.GetVertexAt(1), operation, engine, isHorizontal));
+                                face.SetVertexAt(2, ApplyTransform(face.GetVertexAt(2), operation, engine, isHorizontal));
+                                face.SetVertexAt(3, ApplyTransform(face.GetVertexAt(3), operation, engine, isHorizontal));
+                                typeName = "3D Face (DTM Mesh Element)";
+                                isModified = true;
+                            }
+                            else if (typeName.Contains("Surface") || typeName.Contains("TinSurface"))
+                            {
+                                // Handle DTMs via global matrix shifts for vertical datum shifts
+                                if (operation == TransformType.AhdToMbhd)
+                                {
+                                    ent.TransformBy(Matrix3d.Displacement(new Vector3d(0, 0, MbhdShift)));
+                                    isModified = true;
+                                }
+                                else if (operation == TransformType.MbhdToAhd)
+                                {
+                                    ent.TransformBy(Matrix3d.Displacement(new Vector3d(0, 0, -MbhdShift)));
+                                    isModified = true;
+                                }
+                                typeName = "Civil 3D TinSurface DTM";
                             }
 
                             if (isModified)
