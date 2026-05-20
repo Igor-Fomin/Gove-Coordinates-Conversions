@@ -21,9 +21,8 @@ namespace GoveCivil3DPlugin
     {
         public void Initialize()
         {
+            // Maintains the critical dependency link silently on assembly startup
             AppDomain.CurrentDomain.AssemblyResolve += ResolveDependencies;
-            var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
-            ed?.WriteMessage("\n[Gove Geodetic] High-Precision Engine Loaded.");
         }
 
         public void Terminate()
