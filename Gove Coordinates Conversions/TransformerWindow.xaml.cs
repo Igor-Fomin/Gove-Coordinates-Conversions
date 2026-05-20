@@ -5,6 +5,7 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using GoveCadGeodeticTransformer;
+using Autodesk.Civil.DatabaseServices;
 
 namespace GoveCivil3DPlugin
 {
@@ -24,16 +25,17 @@ namespace GoveCivil3DPlugin
 
         private void ExecuteBatchTransformation(TransformType operation)
         {
+            // [MODELESS CONTEXT GUARD] Explicitly fetch MdiActiveDocument per click
             Document doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
-            this.Hide();
-
+            // [TRANSACTIONAL INTEGRITY] Robust boundary safeguards
             try
             {
+                // Mandatory lock for modeless context driving database modifications
                 using (DocumentLock loc = doc.LockDocument())
                 {
                     using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -45,36 +47,42 @@ namespace GoveCivil3DPlugin
 
                         var engine = new GoveGeodeticEngine();
                         int processedCount = 0;
+                        bool isHorizontal = (operation == TransformType.AmgToMga || operation == TransformType.MgaToAmg);
 
-                        LogConsole.AppendText($"[START] Initializing calculation pipeline: {operation}...\n");
+                        LogConsole.AppendText($"[START] Initializing pipeline: {operation}...\n");
 
                         foreach (ObjectId id in ms)
                         {
                             if (id.IsErased) continue;
 
-                            Entity? ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
+                            Autodesk.AutoCAD.DatabaseServices.Entity? ent = tr.GetObject(id, OpenMode.ForWrite) as Autodesk.AutoCAD.DatabaseServices.Entity;
                             if (ent == null) continue;
 
+                            // [REVISED LOGIC] Isolated Horizontal/Vertical modifications
                             if (ent is DBPoint point)
                             {
-                                point.Position = ProcessPoint3d(point.Position, operation, engine);
+                                point.Position = ApplyTransform(point.Position, operation, engine, isHorizontal);
                                 processedCount++;
                             }
                             else if (ent is Line line)
                             {
-                                line.StartPoint = ProcessPoint3d(line.StartPoint, operation, engine);
-                                line.EndPoint = ProcessPoint3d(line.EndPoint, operation, engine);
+                                line.StartPoint = ApplyTransform(line.StartPoint, operation, engine, isHorizontal);
+                                line.EndPoint = ApplyTransform(line.EndPoint, operation, engine, isHorizontal);
                                 processedCount++;
                             }
                             else if (ent is Polyline pline)
                             {
-                                double currentElevation = pline.Elevation;
+                                // [PLANE EXTRACTION DISPARITY] LWPOLYLINE Elevation isolation
                                 for (int i = 0; i < pline.NumberOfVertices; i++)
                                 {
                                     Point2d pt = pline.GetPoint2dAt(i);
-                                    Point3d transformed3d = ProcessPoint3d(new Point3d(pt.X, pt.Y, currentElevation), operation, engine);
-                                    pline.SetPointAt(i, new Point2d(transformed3d.X, transformed3d.Y));
-                                    if (i == 0) pline.Elevation = transformed3d.Z;
+                                    Point3d transformed = ApplyTransform(new Point3d(pt.X, pt.Y, 0), operation, engine, isHorizontal);
+                                    pline.SetPointAt(i, new Point2d(transformed.X, transformed.Y));
+                                }
+                                if (!isHorizontal) // Only shift elevation for AHD/MBHD
+                                {
+                                    Point3d elevated = ApplyTransform(new Point3d(0, 0, pline.Elevation), operation, engine, isHorizontal);
+                                    pline.Elevation = elevated.Z;
                                 }
                                 processedCount++;
                             }
@@ -82,122 +90,82 @@ namespace GoveCivil3DPlugin
                             {
                                 foreach (ObjectId vId in pline3d)
                                 {
-                                    var v = tr.GetObject(vId, OpenMode.ForWrite) as Entity;
-                                    if (v is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
-                                    {
-                                        v3d.Position = ProcessPoint3d(v3d.Position, operation, engine);
-                                    }
+                                    if (tr.GetObject(vId, OpenMode.ForWrite) is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
+                                        v3d.Position = ApplyTransform(v3d.Position, operation, engine, isHorizontal);
                                 }
                                 processedCount++;
                             }
-                            else if (ent is Polyline2d pline2d)
+                            else if (ent is CogoPoint cogo)
                             {
-                                foreach (ObjectId vId in pline2d)
-                                {
-                                    var v = tr.GetObject(vId, OpenMode.ForWrite) as Entity;
-                                    if (v is Vertex2d v2d)
-                                    {
-                                        v2d.Position = ProcessPoint3d(v2d.Position, operation, engine);
-                                    }
-                                }
+                                // Isolate Easting/Northing while preserving Elevation fields
+                                Point3d transformed = ApplyTransform(new Point3d(cogo.Easting, cogo.Northing, cogo.Elevation), operation, engine, isHorizontal);
+                                cogo.Easting = transformed.X;
+                                cogo.Northing = transformed.Y;
+                                if (!isHorizontal) cogo.Elevation = transformed.Z;
                                 processedCount++;
                             }
                             else if (ent is BlockReference br)
                             {
-                                br.Position = ProcessPoint3d(br.Position, operation, engine);
+                                br.Position = ApplyTransform(br.Position, operation, engine, isHorizontal);
                                 processedCount++;
                             }
                             else if (ent is DBText text)
                             {
-                                text.Position = ProcessPoint3d(text.Position, operation, engine);
+                                text.Position = ApplyTransform(text.Position, operation, engine, isHorizontal);
                                 processedCount++;
                             }
                             else if (ent is MText mtext)
                             {
-                                mtext.Location = ProcessPoint3d(mtext.Location, operation, engine);
-                                processedCount++;
-                            }
-                            else if (ent is Circle circle)
-                            {
-                                circle.Center = ProcessPoint3d(circle.Center, operation, engine);
-                                processedCount++;
-                            }
-                            else if (ent is Arc arc)
-                            {
-                                arc.Center = ProcessPoint3d(arc.Center, operation, engine);
-                                processedCount++;
-                            }
-                            else if (ent is Ellipse ellipse)
-                            {
-                                ellipse.Center = ProcessPoint3d(ellipse.Center, operation, engine);
-                                processedCount++;
-                            }
-                            else if (ent is Spline spline)
-                            {
-                                for (int i = 0; i < spline.NumControlPoints; i++)
-                                {
-                                    spline.SetControlPointAt(i, ProcessPoint3d(spline.GetControlPointAt(i), operation, engine));
-                                }
-                                for (int i = 0; i < spline.NumFitPoints; i++)
-                                {
-                                    spline.SetFitPointAt(i, ProcessPoint3d(spline.GetFitPointAt(i), operation, engine));
-                                }
+                                mtext.Location = ApplyTransform(mtext.Location, operation, engine, isHorizontal);
                                 processedCount++;
                             }
                         }
 
                         tr.Commit();
-                        LogConsole.AppendText($"[SUCCESS] Batch run completed. Processed {processedCount} Model Space items.\n");
-                        StatusLabel.Text = $"Status: Success ({processedCount} items modified)";
+                        LogConsole.AppendText($"[SUCCESS] Pipeline completed. {processedCount} items modified.\n");
+                        StatusLabel.Text = $"Status: Success ({processedCount} items)";
                     }
                 }
             }
             catch (Exception ex)
             {
-                LogConsole.AppendText($"[CRITICAL ERROR] Pipeline execution failed: {ex.Message}\n");
+                LogConsole.AppendText($"[CRITICAL ERROR] Transaction rollback: {ex.Message}\n");
                 StatusLabel.Text = "Status: Execution Faulted";
             }
-            finally
-            {
-                this.ShowDialog();
-            }
+        }
+
+        private Point3d ApplyTransform(Point3d pt, TransformType type, GoveGeodeticEngine engine, bool isHorizontal)
+        {
+            Point3d transformed = ProcessPoint3d(pt, type, engine);
+            
+            // If horizontal operation, strictly retain native Z component
+            if (isHorizontal)
+                return new Point3d(transformed.X, transformed.Y, pt.Z);
+            
+            // If vertical shift, strictly retain X/Y components
+            return new Point3d(pt.X, pt.Y, transformed.Z);
         }
 
         private Point3d ProcessPoint3d(Point3d pt, TransformType type, GoveGeodeticEngine engine)
         {
-            // Direct access for performance and precision preservation
-            double x = pt.X;
-            double y = pt.Y;
-            double z = pt.Z;
-
+            double x = pt.X; double y = pt.Y; double z = pt.Z;
             switch (type)
             {
                 case TransformType.AmgToMga:
                     var amg2mga = engine.TransformAMGToMGA(x, y, z);
                     return new Point3d(amg2mga.Easting, amg2mga.Northing, amg2mga.Height);
-
                 case TransformType.MgaToAmg:
                     var mga2amg = engine.TransformMGAToAMG(x, y, z);
                     return new Point3d(mga2amg.Easting, mga2amg.Northing, mga2amg.Height);
-
                 case TransformType.AhdToMbhd:
-                    // Precision-safe linear shift: retain X/Y bit-for-bit
                     return new Point3d(x, y, z + MbhdShift);
-
                 case TransformType.MbhdToAhd:
-                    // Precision-safe linear shift: retain X/Y bit-for-bit
                     return new Point3d(x, y, z - MbhdShift);
-
                 default:
                     return pt;
             }
-        }        }
-
-    public enum TransformType
-    {
-        AmgToMga,
-        MgaToAmg,
-        AhdToMbhd,
-        MbhdToAhd
+        }
     }
+
+    public enum TransformType { AmgToMga, MgaToAmg, AhdToMbhd, MbhdToAhd }
 }

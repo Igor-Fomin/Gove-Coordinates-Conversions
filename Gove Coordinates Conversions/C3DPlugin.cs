@@ -46,17 +46,27 @@ namespace GoveCivil3DPlugin
 
     public class Commands
     {
+        // Cache instance for singleton modeless lifecycle
+        private static GoveCivil3DPlugin.TransformerWindow? _instance;
+
         /// <summary>
-        /// Command to launch the Gove Geodetic Transformer UI.
+        /// Command to launch the Gove Geodetic Transformer UI modelessly.
         /// </summary>
         [CommandMethod("GOVETRANSFORM")]
         public void GoveTransformCommand()
         {
             try
             {
-                // Launch WPF window natively via Autodesk Application Context
-                var uiWindow = new GoveCivil3DPlugin.TransformerWindow();
-                Autodesk.AutoCAD.ApplicationServices.Application.ShowModalWindow(uiWindow);
+                if (_instance != null && _instance.IsVisible)
+                {
+                    _instance.Focus();
+                    return;
+                }
+
+                _instance = new GoveCivil3DPlugin.TransformerWindow();
+                
+                // Show modelessly to allow interaction with drawing tabs while open
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(_instance);
             }
             catch (System.Exception ex)
             {
