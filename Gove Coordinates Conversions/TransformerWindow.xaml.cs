@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Text;
 using System.Windows;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -38,7 +40,6 @@ namespace GoveCivil3DPlugin
             // [TRANSACTIONAL INTEGRITY] Robust boundary safeguards
             try
             {
-                // Mandatory lock for modeless context driving database modifications
                 using (DocumentLock loc = doc.LockDocument())
                 {
                     using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -49,12 +50,10 @@ namespace GoveCivil3DPlugin
                         if (ms == null) return;
 
                         var engine = new GoveGeodeticEngine();
-                        int processedCount = 0;
+                        var stats = new Dictionary<string, int>();
                         bool isHorizontal = (operation == TransformType.AmgToMga || operation == TransformType.MgaToAmg);
 
                         UpdateLog($"[START] Initializing pipeline: {operation}...");
-
-                        // [GRAPHICS REFRESH] Enable flushing for the current transaction
                         doc.TransactionManager.EnableGraphicsFlush(true);
 
                         foreach (ObjectId id in ms)
@@ -64,15 +63,20 @@ namespace GoveCivil3DPlugin
                             Autodesk.AutoCAD.DatabaseServices.Entity? ent = tr.GetObject(id, OpenMode.ForWrite) as Autodesk.AutoCAD.DatabaseServices.Entity;
                             if (ent == null) continue;
 
+                            string typeName = ent.GetType().Name;
+                            bool isModified = false;
+
                             // [REVISED LOGIC] Isolated Horizontal/Vertical modifications
                             if (ent is DBPoint point)
                             {
                                 point.Position = ApplyTransform(point.Position, operation, engine, isHorizontal);
+                                isModified = true;
                             }
                             else if (ent is Line line)
                             {
                                 line.StartPoint = ApplyTransform(line.StartPoint, operation, engine, isHorizontal);
                                 line.EndPoint = ApplyTransform(line.EndPoint, operation, engine, isHorizontal);
+                                isModified = true;
                             }
                             else if (ent is Polyline pline)
                             {
@@ -87,6 +91,7 @@ namespace GoveCivil3DPlugin
                                     Point3d elevated = ApplyTransform(new Point3d(0, 0, pline.Elevation), operation, engine, isHorizontal);
                                     pline.Elevation = elevated.Z;
                                 }
+                                isModified = true;
                             }
                             else if (ent is Polyline3d pline3d)
                             {
@@ -95,6 +100,7 @@ namespace GoveCivil3DPlugin
                                     if (tr.GetObject(vId, OpenMode.ForWrite) is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
                                         v3d.Position = ApplyTransform(v3d.Position, operation, engine, isHorizontal);
                                 }
+                                isModified = true;
                             }
                             else if (ent is CogoPoint cogo)
                             {
@@ -102,39 +108,56 @@ namespace GoveCivil3DPlugin
                                 cogo.Easting = transformed.X;
                                 cogo.Northing = transformed.Y;
                                 if (!isHorizontal) cogo.Elevation = transformed.Z;
+                                isModified = true;
                             }
                             else if (ent is BlockReference br)
                             {
                                 br.Position = ApplyTransform(br.Position, operation, engine, isHorizontal);
+                                isModified = true;
                             }
                             else if (ent is DBText text)
                             {
                                 text.Position = ApplyTransform(text.Position, operation, engine, isHorizontal);
+                                isModified = true;
                             }
                             else if (ent is MText mtext)
                             {
                                 mtext.Location = ApplyTransform(mtext.Location, operation, engine, isHorizontal);
+                                isModified = true;
                             }
 
-                            // [GRAPHICS REFRESH] Queue the update for the next flush
-                            doc.TransactionManager.QueueForGraphicsFlush();
-                            processedCount++;
-
-                            // Periodically update the UI to show progress without blocking
-                            if (processedCount % 50 == 0)
+                            if (isModified)
                             {
-                                UpdateStatus($"Processing: {processedCount} items...");
+                                if (!stats.ContainsKey(typeName)) stats[typeName] = 0;
+                                stats[typeName]++;
+                                doc.TransactionManager.QueueForGraphicsFlush();
+
+                                if (stats.Count % 50 == 0) UpdateStatus($"Processing: {stats.Count} items...");
                             }
                         }
 
                         tr.Commit();
-
-                        // [GRAPHICS REFRESH] Force immediate visual synchronization
                         Autodesk.AutoCAD.ApplicationServices.Application.UpdateScreen();
                         ed.Regen();
 
-                        UpdateLog($"[SUCCESS] Pipeline completed. {processedCount} items modified.");
-                        UpdateStatus($"Status: Success ({processedCount} items)");
+                        // [DYNAMIC REPORTING] Build success banner and statistics
+                        string headerBanner = GetTransformationHeader(operation);
+                        StringBuilder sb = new StringBuilder();
+                        sb.AppendLine("------------------------------------------------------------");
+                        sb.AppendLine($"[SUCCESS] {headerBanner}");
+                        sb.AppendLine("------------------------------------------------------------");
+                        sb.AppendLine("Modified Entities Statistics:");
+                        
+                        int totalObjects = 0;
+                        foreach (var kvp in stats)
+                        {
+                            sb.AppendLine($"  ➔ {kvp.Key}: {kvp.Value} changed");
+                            totalObjects += kvp.Value;
+                        }
+                        sb.AppendLine($"Total Model Space entities updated: {totalObjects}\n");
+
+                        UpdateLog(sb.ToString());
+                        UpdateStatus($"Status: {headerBanner}");
                     }
                 }
             }
@@ -146,6 +169,18 @@ namespace GoveCivil3DPlugin
             finally
             {
                 ControlsStack.IsEnabled = true;
+            }
+        }
+
+        private string GetTransformationHeader(TransformType type)
+        {
+            switch (type)
+            {
+                case TransformType.AmgToMga: return "AMG84 to MGA94 Transformation Completed";
+                case TransformType.MgaToAmg: return "MGA94 to AMG84 Transformation Completed";
+                case TransformType.AhdToMbhd: return "AHD09 to MBHD Elevation Shift Completed";
+                case TransformType.MbhdToAhd: return "MBHD to AHD09 Elevation Shift Completed";
+                default: return "Transformation Completed";
             }
         }
 
@@ -167,12 +202,8 @@ namespace GoveCivil3DPlugin
         private Point3d ApplyTransform(Point3d pt, TransformType type, GoveGeodeticEngine engine, bool isHorizontal)
         {
             Point3d transformed = ProcessPoint3d(pt, type, engine);
-            
-            // If horizontal operation, strictly retain native Z component
             if (isHorizontal)
                 return new Point3d(transformed.X, transformed.Y, pt.Z);
-            
-            // If vertical shift, strictly retain X/Y components
             return new Point3d(pt.X, pt.Y, transformed.Z);
         }
 
