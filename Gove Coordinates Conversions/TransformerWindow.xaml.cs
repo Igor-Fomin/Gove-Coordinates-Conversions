@@ -32,6 +32,9 @@ namespace GoveCivil3DPlugin
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
+            // [UI RESPONSIVENESS] Disable controls to prevent double-triggering
+            ControlsStack.IsEnabled = false;
+
             // [TRANSACTIONAL INTEGRITY] Robust boundary safeguards
             try
             {
@@ -49,7 +52,10 @@ namespace GoveCivil3DPlugin
                         int processedCount = 0;
                         bool isHorizontal = (operation == TransformType.AmgToMga || operation == TransformType.MgaToAmg);
 
-                        LogConsole.AppendText($"[START] Initializing pipeline: {operation}...\n");
+                        UpdateLog($"[START] Initializing pipeline: {operation}...");
+
+                        // [GRAPHICS REFRESH] Enable flushing for the current transaction
+                        doc.TransactionManager.EnableGraphicsFlush(true);
 
                         foreach (ObjectId id in ms)
                         {
@@ -62,29 +68,25 @@ namespace GoveCivil3DPlugin
                             if (ent is DBPoint point)
                             {
                                 point.Position = ApplyTransform(point.Position, operation, engine, isHorizontal);
-                                processedCount++;
                             }
                             else if (ent is Line line)
                             {
                                 line.StartPoint = ApplyTransform(line.StartPoint, operation, engine, isHorizontal);
                                 line.EndPoint = ApplyTransform(line.EndPoint, operation, engine, isHorizontal);
-                                processedCount++;
                             }
                             else if (ent is Polyline pline)
                             {
-                                // [PLANE EXTRACTION DISPARITY] LWPOLYLINE Elevation isolation
                                 for (int i = 0; i < pline.NumberOfVertices; i++)
                                 {
                                     Point2d pt = pline.GetPoint2dAt(i);
                                     Point3d transformed = ApplyTransform(new Point3d(pt.X, pt.Y, 0), operation, engine, isHorizontal);
                                     pline.SetPointAt(i, new Point2d(transformed.X, transformed.Y));
                                 }
-                                if (!isHorizontal) // Only shift elevation for AHD/MBHD
+                                if (!isHorizontal)
                                 {
                                     Point3d elevated = ApplyTransform(new Point3d(0, 0, pline.Elevation), operation, engine, isHorizontal);
                                     pline.Elevation = elevated.Z;
                                 }
-                                processedCount++;
                             }
                             else if (ent is Polyline3d pline3d)
                             {
@@ -93,45 +95,73 @@ namespace GoveCivil3DPlugin
                                     if (tr.GetObject(vId, OpenMode.ForWrite) is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
                                         v3d.Position = ApplyTransform(v3d.Position, operation, engine, isHorizontal);
                                 }
-                                processedCount++;
                             }
                             else if (ent is CogoPoint cogo)
                             {
-                                // Isolate Easting/Northing while preserving Elevation fields
                                 Point3d transformed = ApplyTransform(new Point3d(cogo.Easting, cogo.Northing, cogo.Elevation), operation, engine, isHorizontal);
                                 cogo.Easting = transformed.X;
                                 cogo.Northing = transformed.Y;
                                 if (!isHorizontal) cogo.Elevation = transformed.Z;
-                                processedCount++;
                             }
                             else if (ent is BlockReference br)
                             {
                                 br.Position = ApplyTransform(br.Position, operation, engine, isHorizontal);
-                                processedCount++;
                             }
                             else if (ent is DBText text)
                             {
                                 text.Position = ApplyTransform(text.Position, operation, engine, isHorizontal);
-                                processedCount++;
                             }
                             else if (ent is MText mtext)
                             {
                                 mtext.Location = ApplyTransform(mtext.Location, operation, engine, isHorizontal);
-                                processedCount++;
+                            }
+
+                            // [GRAPHICS REFRESH] Queue the update for the next flush
+                            doc.TransactionManager.QueueForGraphicsFlush();
+                            processedCount++;
+
+                            // Periodically update the UI to show progress without blocking
+                            if (processedCount % 50 == 0)
+                            {
+                                UpdateStatus($"Processing: {processedCount} items...");
                             }
                         }
 
                         tr.Commit();
-                        LogConsole.AppendText($"[SUCCESS] Pipeline completed. {processedCount} items modified.\n");
-                        StatusLabel.Text = $"Status: Success ({processedCount} items)";
+
+                        // [GRAPHICS REFRESH] Force immediate visual synchronization
+                        Autodesk.AutoCAD.ApplicationServices.Application.UpdateScreen();
+                        ed.Regen();
+
+                        UpdateLog($"[SUCCESS] Pipeline completed. {processedCount} items modified.");
+                        UpdateStatus($"Status: Success ({processedCount} items)");
                     }
                 }
             }
             catch (Exception ex)
             {
-                LogConsole.AppendText($"[CRITICAL ERROR] Transaction rollback: {ex.Message}\n");
-                StatusLabel.Text = "Status: Execution Faulted";
+                UpdateLog($"[CRITICAL ERROR] Transaction rollback: {ex.Message}");
+                UpdateStatus("Status: Execution Faulted");
             }
+            finally
+            {
+                ControlsStack.IsEnabled = true;
+            }
+        }
+
+        private void UpdateLog(string message)
+        {
+            this.Dispatcher.Invoke(() => {
+                LogConsole.AppendText($"{message}\n");
+                LogConsole.ScrollToEnd();
+            }, System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void UpdateStatus(string message)
+        {
+            this.Dispatcher.Invoke(() => {
+                StatusLabel.Text = message;
+            }, System.Windows.Threading.DispatcherPriority.Background);
         }
 
         private Point3d ApplyTransform(Point3d pt, TransformType type, GoveGeodeticEngine engine, bool isHorizontal)

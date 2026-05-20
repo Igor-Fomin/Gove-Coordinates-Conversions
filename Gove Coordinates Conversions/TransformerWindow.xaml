@@ -42,7 +42,7 @@
             <TextBlock Text="Model Space Batch Transformation Suite" FontSize="10" Foreground="#AAAAAA"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="1">
+        <StackPanel x:Name="ControlsStack" Grid.Row="1">
             <Button Content="GOVE AMG84 ➔ GOVE MGA94" Click="ConvertAmgToMga_Click"/>
             <Button Content="GOVE MGA94 ➔ GOVE AMG84" Click="ConvertMgaToAmg_Click"/>
             <Button Content="AHD09 ➔ MBHD (+2.154m Height Shift)" Click="ConvertAhdToMbhd_Click"/>
