@@ -56,6 +56,7 @@ namespace GoveCivil3DPlugin
                         UpdateLog($"[START] Initializing pipeline: {operation}...");
                         doc.TransactionManager.EnableGraphicsFlush(true);
 
+                        int processedCount = 0;
                         foreach (ObjectId id in ms)
                         {
                             if (id.IsErased) continue;
@@ -80,13 +81,14 @@ namespace GoveCivil3DPlugin
                             }
                             else if (ent is Polyline pline)
                             {
+                                // [PLANE EXTRACTION DISPARITY] LWPOLYLINE Elevation isolation
                                 for (int i = 0; i < pline.NumberOfVertices; i++)
                                 {
                                     Point2d pt = pline.GetPoint2dAt(i);
                                     Point3d transformed = ApplyTransform(new Point3d(pt.X, pt.Y, 0), operation, engine, isHorizontal);
                                     pline.SetPointAt(i, new Point2d(transformed.X, transformed.Y));
                                 }
-                                if (!isHorizontal)
+                                if (!isHorizontal) // Only shift elevation for AHD/MBHD
                                 {
                                     Point3d elevated = ApplyTransform(new Point3d(0, 0, pline.Elevation), operation, engine, isHorizontal);
                                     pline.Elevation = elevated.Z;
@@ -104,6 +106,7 @@ namespace GoveCivil3DPlugin
                             }
                             else if (ent is CogoPoint cogo)
                             {
+                                // Isolate Easting/Northing while preserving Elevation fields
                                 Point3d transformed = ApplyTransform(new Point3d(cogo.Easting, cogo.Northing, cogo.Elevation), operation, engine, isHorizontal);
                                 cogo.Easting = transformed.X;
                                 cogo.Northing = transformed.Y;
@@ -122,12 +125,14 @@ namespace GoveCivil3DPlugin
                             }
                             else if (ent is RasterImage img)
                             {
-                                img.InsertionPoint = ApplyTransform(img.InsertionPoint, operation, engine, isHorizontal);
+                                Point3d origin = img.Orientation.Origin;
+                                Point3d newOrigin = ApplyTransform(origin, operation, engine, isHorizontal);
+                                img.Orientation = new CoordinateSystem3d(newOrigin, img.Orientation.Xaxis, img.Orientation.Yaxis);
                                 isModified = true;
                             }
-                            else if (ent is PdfUnderlay pdf)
+                            else if (ent is UnderlayReference underlay)
                             {
-                                pdf.InsertionPoint = ApplyTransform(pdf.InsertionPoint, operation, engine, isHorizontal);
+                                underlay.Position = ApplyTransform(underlay.Position, operation, engine, isHorizontal);
                                 isModified = true;
                             }
                             else if (ent is BlockReference xref)
@@ -144,7 +149,7 @@ namespace GoveCivil3DPlugin
                                 }
                                 isModified = true;
                             }
-                            else if (ent is Face3d face)
+                            else if (ent is Face face)
                             {
                                 face.SetVertexAt(0, ApplyTransform(face.GetVertexAt(0), operation, engine, isHorizontal));
                                 face.SetVertexAt(1, ApplyTransform(face.GetVertexAt(1), operation, engine, isHorizontal));
@@ -173,9 +178,11 @@ namespace GoveCivil3DPlugin
                             {
                                 if (!stats.ContainsKey(typeName)) stats[typeName] = 0;
                                 stats[typeName]++;
+                                processedCount++;
+
                                 doc.TransactionManager.QueueForGraphicsFlush();
 
-                                if (stats.Count % 50 == 0) UpdateStatus($"Processing: {stats.Count} items...");
+                                if (processedCount % 50 == 0) UpdateStatus($"Processing: {processedCount} items...");
                             }
                         }
 
