@@ -56,133 +56,108 @@ namespace GoveCivil3DPlugin
                         UpdateLog($"[START] Initializing pipeline: {operation}...");
                         doc.TransactionManager.EnableGraphicsFlush(true);
 
-                        int processedCount = 0;
                         foreach (ObjectId id in ms)
                         {
                             if (id.IsErased) continue;
-
                             Autodesk.AutoCAD.DatabaseServices.Entity? ent = tr.GetObject(id, OpenMode.ForWrite) as Autodesk.AutoCAD.DatabaseServices.Entity;
                             if (ent == null) continue;
 
                             string typeName = ent.GetType().Name;
                             bool isModified = false;
 
-                            // [REVISED LOGIC] Isolated Horizontal/Vertical modifications
-                            if (ent is DBPoint point)
+                            try
                             {
-                                point.Position = ApplyTransform(point.Position, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is Line line)
-                            {
-                                line.StartPoint = ApplyTransform(line.StartPoint, operation, engine, isHorizontal);
-                                line.EndPoint = ApplyTransform(line.EndPoint, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is Polyline pline)
-                            {
-                                // [PLANE EXTRACTION DISPARITY] LWPOLYLINE Elevation isolation
-                                for (int i = 0; i < pline.NumberOfVertices; i++)
+                                // =========================================================
+                                // TIER 1: Distributed Geometries (Point-by-Point Shifting)
+                                // =========================================================
+                                if (ent is DBPoint point)
                                 {
-                                    Point2d pt = pline.GetPoint2dAt(i);
-                                    Point3d transformed = ApplyTransform(new Point3d(pt.X, pt.Y, 0), operation, engine, isHorizontal);
-                                    pline.SetPointAt(i, new Point2d(transformed.X, transformed.Y));
+                                    point.Position = ProcessPoint3d(point.Position, operation, engine);
+                                    isModified = true;
                                 }
-                                if (!isHorizontal) // Only shift elevation for AHD/MBHD
+                                else if (ent is Line line)
                                 {
-                                    Point3d elevated = ApplyTransform(new Point3d(0, 0, pline.Elevation), operation, engine, isHorizontal);
-                                    pline.Elevation = elevated.Z;
+                                    line.StartPoint = ProcessPoint3d(line.StartPoint, operation, engine);
+                                    line.EndPoint = ProcessPoint3d(line.EndPoint, operation, engine);
+                                    isModified = true;
                                 }
-                                isModified = true;
-                            }
-                            else if (ent is Polyline3d pline3d)
-                            {
-                                foreach (ObjectId vId in pline3d)
+                                else if (ent is Polyline pline)
                                 {
-                                    if (tr.GetObject(vId, OpenMode.ForWrite) is Autodesk.AutoCAD.DatabaseServices.PolylineVertex3d v3d)
-                                        v3d.Position = ApplyTransform(v3d.Position, operation, engine, isHorizontal);
+                                    double currentElevation = pline.Elevation;
+                                    for (int i = 0; i < pline.NumberOfVertices; i++)
+                                    {
+                                        Point2d pt = pline.GetPoint2dAt(i);
+                                        Point3d pseudo3d = new Point3d(pt.X, pt.Y, currentElevation);
+                                        Point3d transformed3d = ProcessPoint3d(pseudo3d, operation, engine);
+                                        pline.SetPointAt(i, new Point2d(transformed3d.X, transformed3d.Y));
+                                        if (i == 0) pline.Elevation = transformed3d.Z;
+                                    }
+                                    isModified = true;
                                 }
-                                isModified = true;
-                            }
-                            else if (ent is CogoPoint cogo)
-                            {
-                                // Isolate Easting/Northing while preserving Elevation fields
-                                Point3d transformed = ApplyTransform(new Point3d(cogo.Easting, cogo.Northing, cogo.Elevation), operation, engine, isHorizontal);
-                                cogo.Easting = transformed.X;
-                                cogo.Northing = transformed.Y;
-                                if (!isHorizontal) cogo.Elevation = transformed.Z;
-                                isModified = true;
-                            }
-                            else if (ent is MText mtext)
-                            {
-                                mtext.Location = ApplyTransform(mtext.Location, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is DBText dbtext)
-                            {
-                                dbtext.Position = ApplyTransform(dbtext.Position, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is RasterImage img)
-                            {
-                                Point3d origin = img.Orientation.Origin;
-                                Point3d newOrigin = ApplyTransform(origin, operation, engine, isHorizontal);
-                                img.Orientation = new CoordinateSystem3d(newOrigin, img.Orientation.Xaxis, img.Orientation.Yaxis);
-                                isModified = true;
-                            }
-                            else if (ent is UnderlayReference underlay)
-                            {
-                                underlay.Position = ApplyTransform(underlay.Position, operation, engine, isHorizontal);
-                                isModified = true;
-                            }
-                            else if (ent is BlockReference xref)
-                            {
-                                xref.Position = ApplyTransform(xref.Position, operation, engine, isHorizontal);
-                                BlockTableRecord? btr = tr.GetObject(xref.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                                if (btr != null && btr.IsFromExternalReference)
+                                else if (ent is Polyline3d poly3d)
                                 {
-                                    typeName = "XRef (External Reference)";
+                                    foreach (ObjectId vxId in poly3d)
+                                    {
+                                        if (tr.GetObject(vxId, OpenMode.ForWrite) is PolylineVertex3d vx)
+                                            vx.Position = ProcessPoint3d(vx.Position, operation, engine);
+                                    }
+                                    isModified = true;
                                 }
+                                else if (ent is Face face)
+                                {
+                                    face.SetVertexAt(0, ProcessPoint3d(face.GetVertexAt(0), operation, engine));
+                                    face.SetVertexAt(1, ProcessPoint3d(face.GetVertexAt(1), operation, engine));
+                                    face.SetVertexAt(2, ProcessPoint3d(face.GetVertexAt(2), operation, engine));
+                                    face.SetVertexAt(3, ProcessPoint3d(face.GetVertexAt(3), operation, engine));
+                                    isModified = true;
+                                }
+                                else if (typeName == "CogoPoint")
+                                {
+                                    dynamic cogo = (dynamic)ent;
+                                    Point3d cogoLoc = new Point3d(cogo.Easting, cogo.Northing, cogo.Elevation);
+                                    Point3d transformed = ProcessPoint3d(cogoLoc, operation, engine);
+                                    cogo.Easting = transformed.X;
+                                    cogo.Northing = transformed.Y;
+                                    cogo.Elevation = transformed.Z;
+                                    isModified = true;
+                                }
+                                // =========================================================
+                                // TIER 2: UNIVERSAL FALLBACK (Matrix Rigid-Body Shifting)
+                                // Catches MLeaders, Hatches, Surfaces, Text, Blocks, Regions, Solids, etc.
+                                // =========================================================
                                 else
                                 {
-                                    typeName = "Block Reference";
+                                    if (ent.Bounds.HasValue)
+                                    {
+                                        // 1. Find the volumetric center of the complex object
+                                        Point3d min = ent.Bounds.Value.MinPoint;
+                                        Point3d max = ent.Bounds.Value.MaxPoint;
+                                        Point3d center = new Point3d((min.X + max.X) / 2, (min.Y + max.Y) / 2, (min.Z + max.Z) / 2);
+
+                                        // 2. Calculate the geodetic shift exactly at that center point
+                                        Point3d targetCenter = ProcessPoint3d(center, operation, engine);
+
+                                        // 3. Create a 3D displacement vector
+                                        Vector3d displacement = targetCenter - center;
+
+                                        // 4. Move the entire complex object natively and safely
+                                        ent.TransformBy(Matrix3d.Displacement(displacement));
+                                        isModified = true;
+                                    }
                                 }
-                                isModified = true;
-                            }
-                            else if (ent is Face face)
-                            {
-                                face.SetVertexAt(0, ApplyTransform(face.GetVertexAt(0), operation, engine, isHorizontal));
-                                face.SetVertexAt(1, ApplyTransform(face.GetVertexAt(1), operation, engine, isHorizontal));
-                                face.SetVertexAt(2, ApplyTransform(face.GetVertexAt(2), operation, engine, isHorizontal));
-                                face.SetVertexAt(3, ApplyTransform(face.GetVertexAt(3), operation, engine, isHorizontal));
-                                typeName = "3D Face (DTM Mesh Element)";
-                                isModified = true;
-                            }
-                            else if (typeName.Contains("Surface") || typeName.Contains("TinSurface"))
-                            {
-                                // Handle DTMs via global matrix shifts for vertical datum shifts
-                                if (operation == TransformType.AhdToMbhd)
+
+                                // Track statistics and push graphics memory flushes out dynamically
+                                if (isModified)
                                 {
-                                    ent.TransformBy(Matrix3d.Displacement(new Vector3d(0, 0, MbhdShift)));
-                                    isModified = true;
+                                    if (!stats.ContainsKey(typeName)) stats[typeName] = 0;
+                                    stats[typeName]++;
+                                    tr.TransactionManager.QueueForGraphicsFlush();
                                 }
-                                else if (operation == TransformType.MbhdToAhd)
-                                {
-                                    ent.TransformBy(Matrix3d.Displacement(new Vector3d(0, 0, -MbhdShift)));
-                                    isModified = true;
-                                }
-                                typeName = "Civil 3D TinSurface DTM";
                             }
-
-                            if (isModified)
+                            catch (Autodesk.AutoCAD.Runtime.Exception)
                             {
-                                if (!stats.ContainsKey(typeName)) stats[typeName] = 0;
-                                stats[typeName]++;
-                                processedCount++;
-
-                                doc.TransactionManager.QueueForGraphicsFlush();
-
-                                if (processedCount % 50 == 0) UpdateStatus($"Processing: {processedCount} items...");
+                                // Skip locked objects (e.g., objects on locked layers) silently to prevent crashing the batch
+                                continue;
                             }
                         }
 
