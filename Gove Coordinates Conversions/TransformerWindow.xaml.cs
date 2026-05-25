@@ -34,8 +34,9 @@ namespace GoveCivil3DPlugin
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
-            // [UI RESPONSIVENESS] Disable controls to prevent double-triggering
+            // [UI RESPONSIVENESS] Disable controls and hide window to prevent interference
             ControlsStack.IsEnabled = false;
+            this.Hide();
 
             // [TRANSACTIONAL INTEGRITY] Robust boundary safeguards
             try
@@ -50,11 +51,7 @@ namespace GoveCivil3DPlugin
                         if (ms == null) return;
 
                         var engine = new GoveGeodeticEngine();
-                        var stats = new Dictionary<string, int>();
-                        bool isHorizontal = (operation == TransformType.AmgToMga || operation == TransformType.MgaToAmg);
-
-                        UpdateLog($"[START] Initializing pipeline: {operation}...");
-                        doc.TransactionManager.EnableGraphicsFlush(true);
+                        int totalObjects = 0;
 
                         foreach (ObjectId id in ms)
                         {
@@ -146,17 +143,15 @@ namespace GoveCivil3DPlugin
                                     }
                                 }
 
-                                // Track statistics and push graphics memory flushes out dynamically
                                 if (isModified)
                                 {
-                                    if (!stats.ContainsKey(typeName)) stats[typeName] = 0;
-                                    stats[typeName]++;
+                                    totalObjects++;
                                     tr.TransactionManager.QueueForGraphicsFlush();
                                 }
                             }
                             catch (Autodesk.AutoCAD.Runtime.Exception)
                             {
-                                // Skip locked objects (e.g., objects on locked layers) silently to prevent crashing the batch
+                                // Skip locked objects silently
                                 continue;
                             }
                         }
@@ -165,35 +160,19 @@ namespace GoveCivil3DPlugin
                         Autodesk.AutoCAD.ApplicationServices.Application.UpdateScreen();
                         ed.Regen();
 
-                        // [DYNAMIC REPORTING] Build success banner and statistics
                         string headerBanner = GetTransformationHeader(operation);
-                        StringBuilder sb = new StringBuilder();
-                        sb.AppendLine("------------------------------------------------------------");
-                        sb.AppendLine($"[SUCCESS] {headerBanner}");
-                        sb.AppendLine("------------------------------------------------------------");
-                        sb.AppendLine("Modified Entities Statistics:");
-                        
-                        int totalObjects = 0;
-                        foreach (var kvp in stats)
-                        {
-                            sb.AppendLine($"  ➔ {kvp.Key}: {kvp.Value} changed");
-                            totalObjects += kvp.Value;
-                        }
-                        sb.AppendLine($"Total Model Space entities updated: {totalObjects}\n");
-
-                        UpdateLog(sb.ToString());
-                        UpdateStatus($"Status: {headerBanner}");
+                        UpdateStatus($"Status: {headerBanner} ({totalObjects} items updated)");
                     }
                 }
             }
             catch (Exception ex)
             {
-                UpdateLog($"[CRITICAL ERROR] Transaction rollback: {ex.Message}");
-                UpdateStatus("Status: Execution Faulted");
+                UpdateStatus($"Status: Execution Faulted - {ex.Message}");
             }
             finally
             {
                 ControlsStack.IsEnabled = true;
+                this.Show();
             }
         }
 
@@ -201,20 +180,12 @@ namespace GoveCivil3DPlugin
         {
             switch (type)
             {
-                case TransformType.AmgToMga: return "AMG84 to MGA94 Transformation Completed";
-                case TransformType.MgaToAmg: return "MGA94 to AMG84 Transformation Completed";
-                case TransformType.AhdToMbhd: return "AHD09 to MBHD Elevation Shift Completed";
-                case TransformType.MbhdToAhd: return "MBHD to AHD09 Elevation Shift Completed";
+                case TransformType.AmgToMga: return "AMG84 to MGA94 Completed";
+                case TransformType.MgaToAmg: return "MGA94 to AMG84 Completed";
+                case TransformType.AhdToMbhd: return "AHD09 to MBHD Shift Completed";
+                case TransformType.MbhdToAhd: return "MBHD to AHD09 Shift Completed";
                 default: return "Transformation Completed";
             }
-        }
-
-        private void UpdateLog(string message)
-        {
-            this.Dispatcher.Invoke(() => {
-                LogConsole.AppendText($"{message}\n");
-                LogConsole.ScrollToEnd();
-            }, System.Windows.Threading.DispatcherPriority.Background);
         }
 
         private void UpdateStatus(string message)
@@ -224,29 +195,28 @@ namespace GoveCivil3DPlugin
             }, System.Windows.Threading.DispatcherPriority.Background);
         }
 
-        private Point3d ApplyTransform(Point3d pt, TransformType type, GoveGeodeticEngine engine, bool isHorizontal)
-        {
-            Point3d transformed = ProcessPoint3d(pt, type, engine);
-            if (isHorizontal)
-                return new Point3d(transformed.X, transformed.Y, pt.Z);
-            return new Point3d(pt.X, pt.Y, transformed.Z);
-        }
-
         private Point3d ProcessPoint3d(Point3d pt, TransformType type, GoveGeodeticEngine engine)
         {
-            double x = pt.X; double y = pt.Y; double z = pt.Z;
             switch (type)
             {
                 case TransformType.AmgToMga:
-                    var amg2mga = engine.TransformAMGToMGA(x, y, z);
-                    return new Point3d(amg2mga.Easting, amg2mga.Northing, amg2mga.Height);
+                    var mga = engine.TransformAMGToMGA(pt.X, pt.Y, pt.Z);
+                    // Retain original pt.Z to prevent 3D Cartesian matrix floating-point drift
+                    return new Point3d(mga.Easting, mga.Northing, pt.Z);
+
                 case TransformType.MgaToAmg:
-                    var mga2amg = engine.TransformMGAToAMG(x, y, z);
-                    return new Point3d(mga2amg.Easting, mga2amg.Northing, mga2amg.Height);
+                    var amg = engine.TransformMGAToAMG(pt.X, pt.Y, pt.Z);
+                    // Retain original pt.Z to prevent 3D Cartesian matrix floating-point drift
+                    return new Point3d(amg.Easting, amg.Northing, pt.Z);
+
                 case TransformType.AhdToMbhd:
-                    return new Point3d(x, y, z + MbhdShift);
+                    // MBHD is higher: apply the explicit vertical datum scalar shift
+                    return new Point3d(pt.X, pt.Y, pt.Z + MbhdShift);
+
                 case TransformType.MbhdToAhd:
-                    return new Point3d(x, y, z - MbhdShift);
+                    // Drop down to AHD standard baseline height datum
+                    return new Point3d(pt.X, pt.Y, pt.Z - MbhdShift);
+
                 default:
                     return pt;
             }

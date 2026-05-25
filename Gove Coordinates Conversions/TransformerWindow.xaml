@@ -1,7 +1,7 @@
 <Window x:Class="GoveCivil3DPlugin.TransformerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Gove Transformation Suite" Height="580" Width="500"
+        Title="Gove Transformation Suite" Height="310" Width="500"
         Background="#2D2D2D" Foreground="#FFFFFF"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
         FontFamily="Segoe UI" FontSize="12">
@@ -41,7 +41,6 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -51,37 +50,29 @@
         </StackPanel>
 
         <StackPanel x:Name="ControlsStack" Grid.Row="1">
-            <GroupBox Header="Horizontal Transformations">
-                <StackPanel>
-                    <Button Content="GOVE AMG84 ➔ GOVE MGA94" Click="ConvertAmgToMga_Click"/>
-                    <Button Content="GOVE MGA94 ➔ GOVE AMG84" Click="ConvertMgaToAmg_Click" Margin="0"/>
-                </StackPanel>
-            </GroupBox>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
 
-            <GroupBox Header="Vertical Transformations (Elevation Shifts)">
-                <StackPanel>
-                    <Button Content="AHD09 ➔ MBHD (+2.154m Height Shift)" Click="ConvertAhdToMbhd_Click"/>
-                    <Button Content="MBHD ➔ AHD09 (-2.154m Height Shift)" Click="ConvertMbhdToAhd_Click" Margin="0"/>
-                </StackPanel>
-            </GroupBox>
+                <GroupBox Grid.Column="0" Header="Horizontal Transformations">
+                    <StackPanel>
+                        <Button Content="AMG84 ➔ MGA94" Click="ConvertAmgToMga_Click"/>
+                        <Button Content="MGA94 ➔ AMG84" Click="ConvertMgaToAmg_Click" Margin="0"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Grid.Column="2" Header="Vertical Shifts">
+                    <StackPanel>
+                        <Button Content="AHD09 ➔ MBHD (+2.154m)" Click="ConvertAhdToMbhd_Click"/>
+                        <Button Content="MBHD ➔ AHD09 (-2.154m)" Click="ConvertMbhdToAhd_Click" Margin="0"/>
+                    </StackPanel>
+                </GroupBox>
+            </Grid>
         </StackPanel>
 
-        <GroupBox Grid.Row="2" Header="Execution Log Monitor" Foreground="#AAAAAA" BorderBrush="#555555" Margin="0,5,0,0">
-            <TextBox x:Name="LogConsole" 
-                     Background="#1E1E1E" 
-                     Foreground="#00FF00" 
-                     FontFamily="Consolas" 
-                     FontSize="11" 
-                     IsReadOnly="True" 
-                     VerticalScrollBarVisibility="Auto" 
-                     HorizontalScrollBarVisibility="Auto"
-                     TextWrapping="NoWrap" 
-                     AcceptsReturn="True"
-                     MinHeight="180"
-                     Margin="5"
-                     Text="[READY] System online. Awaiting Model Space pipeline query...&#x0a;"/>
-        </GroupBox>
-
-        <TextBlock Grid.Row="3" x:Name="StatusLabel" Text="Status: Operational" Foreground="#888888" Margin="0,10,0,0" FontSize="11"/>
+        <TextBlock Grid.Row="2" x:Name="StatusLabel" Text="Status: Operational" Foreground="#E1E1E1" Margin="0,10,0,10" FontSize="12" FontWeight="SemiBold"/>
     </Grid>
 </Window>
